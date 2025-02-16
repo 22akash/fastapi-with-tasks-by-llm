@@ -4,21 +4,20 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import json
-from typing import Dict, Any, List
+from typing import Dict, Any
 from pydantic import BaseModel  # Import Pydantic
 from pathlib import Path, PureWindowsPath
 from datetime import datetime
 import sqlite3
 import numpy as np
+from typing import List
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
-import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 import subprocess
 import sys
-import base64
 import re
-
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 app = FastAPI()
@@ -37,6 +36,108 @@ app.add_middleware(
 class RunTaskRequest(BaseModel):
     task: str
 
+import requests
+import json
+import os
+import subprocess
+from fastapi import FastAPI, HTTPException
+
+app = FastAPI()
+
+
+
+
+def setup_and_run_datagen(user_email: str):
+    """
+    Ensures 'uv' is installed, downloads datagen.py, sets up environment, and runs the script.
+    """
+    datagen_url= "https://raw.githubusercontent.com/sanand0/tools-in-data-science-public/tds-2025-01/project-1/datagen.py"
+    try:
+        # Add logging
+        print(f"Starting setup for email: {user_email}")
+        print(f"Datagen URL: {datagen_url}")
+
+        # Validate email format
+        if not re.match(r"^[\w\.-]+@[\w\.-]+\.\w+$", user_email):
+            return {"status": "error", "message": "Invalid email format."}
+
+        # Create a temporary directory for the script
+        temp_dir = "temp_datagen"
+        os.makedirs(temp_dir, exist_ok=True)
+        script_path = os.path.join(temp_dir, "datagen.py")
+        
+        print(f"Created temporary directory: {temp_dir}")
+
+        # Download datagen.py with better error handling
+        try:
+            print(f"Downloading script from: {datagen_url}")
+            response = requests.get(datagen_url, timeout=30)
+            response.raise_for_status()
+            with open(script_path, 'wb') as f:
+                f.write(response.content)
+            print("Script downloaded successfully")
+        except requests.exceptions.RequestException as e:
+            error_msg = f"Failed to download datagen.py: {str(e)}"
+            print(error_msg)
+            return {"status": "error", "message": error_msg}
+
+        # Set up virtual environment and install dependencies
+        try:
+            print("Setting up virtual environment...")
+            venv_cmd = ["python", "-m", "venv", os.path.join(temp_dir, "venv")]
+            subprocess.run(venv_cmd, check=True, capture_output=True, text=True)
+            
+            # Determine the correct python path based on OS
+            venv_python = os.path.join(temp_dir, "venv", "Scripts" if os.name == 'nt' else "bin", "python")
+            print(f"Using python path: {venv_python}")
+
+            # Install requirements including Pillow
+            print("Installing requirements...")
+            pip_cmd = [venv_python, "-m", "pip", "install", "faker", "Pillow"]  # Added Pillow here
+            subprocess.run(pip_cmd, check=True, capture_output=True, text=True)
+
+            # Run datagen.py with timeout
+            print(f"Running script with email: {user_email}")
+            process = subprocess.run(
+                [venv_python, script_path, user_email],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+
+            print("Script execution completed")
+            return {
+                "status": "success",
+                "message": f"Data generation completed successfully for {user_email}",
+                "output": process.stdout
+            }
+
+        except subprocess.TimeoutExpired as e:
+            error_msg = "Data generation timed out after 60 seconds"
+            print(error_msg)
+            return {"status": "error", "message": error_msg}
+        except subprocess.CalledProcessError as e:
+            error_msg = f"Error running script: {e.stderr}"
+            print(error_msg)
+            return {"status": "error", "message": error_msg}
+
+    except Exception as e:
+        error_msg = f"Unexpected error: {str(e)}"
+        print(error_msg)
+        return {"status": "error", "message": error_msg}
+    finally:
+        # Clean up temporary directory
+        try:
+            print(f"Cleaning up temporary directory: {temp_dir}")
+            import shutil
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except Exception as e:
+            print(f"Error during cleanup: {str(e)}")
+
+
+
+
 DATE_FORMATS = [
     "%Y-%m-%d",          # 2022-01-19
     "%d-%b-%Y",          # 07-Mar-2010
@@ -52,7 +153,8 @@ def parse_date(date_str):
             return datetime.strptime(date_str.strip(), fmt)
         except ValueError:
             continue
-    return None 
+    return None
+
 
 def count_days(input_location: str, output_location: str, day_name: str):
     if not os.path.exists(input_location):
@@ -96,6 +198,7 @@ def count_days(input_location: str, output_location: str, day_name: str):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing dates: {e}")
+
     
 def sort_contacts(input_location: str, output_location: str):
 
@@ -158,6 +261,51 @@ def generate_markdown_index(input_location: str, output_location: str):
 
     return {"status": "success", "message": f"Markdown index saved to {output_path}."}
 
+
+def extract_sender_email(input_location: str, output_location: str):
+    """Reads an email file, extracts the sender's email address, and saves it to an output file."""
+    try:
+        # Read content from the input file
+        with open(input_location, "r", encoding="utf-8") as f:
+            text = f.read()
+
+        # Define the LLM extraction task
+        messages = [
+            {"role": "system", "content": "You are an AI assistant that extracts the sender's email from an email message."},
+            {"role": "user", "content": f"Extract the sender's email address from the following email message. The sender is the person who originally sent the email, not the recipient. Identify the sender by analyzing the email structure, headers, and context. Return only the sender's email address as plain text, nothing else:\n\n{text}"}
+        ]
+
+        # Make API call
+        response = requests.post(
+            "https://aiproxy.sanand.workers.dev/openai/v1/chat/completions",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {AIPROXY_Token}"
+            },
+            json={
+                "model": "gpt-4o-mini",
+                "messages": messages,
+                "temperature": 0.2
+            },
+            verify=False
+        )
+
+        response.raise_for_status()
+        
+        # Extract response content
+        result = response.json()
+        sender_email = result["choices"][0]["message"]["content"].strip()
+
+        # Save the extracted sender's email to the output file
+        with open(output_location, "w", encoding="utf-8") as f:
+            f.write(sender_email)
+
+        return {"status": "success", "message": f"Sender's email extracted and saved to {output_location}"}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error extracting sender's email: {str(e)}")
+
+
 def calculate_gold_sales(input_location: str, output_location: str):
     """Calculate total sales for Gold ticket type and write to output file."""
     if not os.path.exists(input_location):
@@ -190,6 +338,7 @@ def calculate_gold_sales(input_location: str, output_location: str):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error calculating gold ticket sales: {e}")
+    
 
 def cosine_similarity(v1: List[float], v2: List[float]) -> float:
     dot_product = sum(x * y for x, y in zip(v1, v2))
@@ -258,67 +407,6 @@ def find_similar_comments(input_location: str, output_location: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing comments: {e}")
 
-def extract_credit_card(input_location: str, output_location: str):
-    if not os.path.exists(input_location):
-        raise HTTPException(status_code=404, detail=f"Input image {input_location} does not exist.")
-
-    try:
-        # Read the image and encode it to base64
-        with open(input_location, "rb") as image_file:
-            import base64
-            image_data = base64.b64encode(image_file.read()).decode('utf-8')
-
-        # Prepare the prompt for the LLM
-        prompt = f"""
-        This image contains a credit card number. Please extract only the 16-digit number from the card.
-        Return only the digits without any spaces or special characters.
-        """
-
-        # Make API call to extract text from image
-        response = requests.post(
-            "http://aiproxy.sanand.workers.dev/openai/v1/chat/completions",
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {AIPROXY_Token}"
-            },
-            json={
-                "model": "gpt-4-vision-preview",
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/png;base64,{image_data}"
-                                }
-                            }
-                        ]
-                    }
-                ],
-                "max_tokens": 300
-            },
-            verify=False
-        )
-
-        response.raise_for_status()
-        result = response.json()
-        
-        # Extract the card number from the response
-        card_number = ''.join(filter(str.isdigit, result['choices'][0]['message']['content']))
-
-        # Write the card number to output file
-        with open(output_location, 'w', encoding='utf-8') as file:
-            file.write(card_number)
-
-        return {
-            "status": "success",
-            "message": f"Credit card number extracted and saved to {output_location}."
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing credit card image: {e}")
-
 def scrape_website(url: str, output_location: str):
     """
     Scrapes the content from a given URL and saves it to a file.
@@ -336,7 +424,7 @@ def scrape_website(url: str, output_location: str):
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
-        response = requests.get(url, headers=headers, timeout=10,verify=False)
+        response = requests.get(url, headers=headers, timeout=10)
         response.raise_for_status()
 
         # Parse with BeautifulSoup
@@ -364,49 +452,6 @@ def scrape_website(url: str, output_location: str):
         raise HTTPException(status_code=500, detail=f"Error fetching website: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing website content: {str(e)}")
-
-def extract_sender_email(input_location: str, output_location: str):
-    """Reads an email file, extracts the sender's email address, and saves it to an output file."""
-    try:
-        # Read content from the input file
-        with open(input_location, "r", encoding="utf-8") as f:
-            text = f.read()
-
-        # Define the LLM extraction task
-        messages = [
-            {"role": "system", "content": "You are an AI assistant that extracts the sender's email from an email message."},
-            {"role": "user", "content": f"Extract the sender's email address from the following email message. The sender is the person who originally sent the email, not the recipient. Identify the sender by analyzing the email structure, headers, and context. Return only the sender's email address as plain text, nothing else:\n\n{text}"}
-        ]
-
-        # Make API call
-        response = requests.post(
-            "https://aiproxy.sanand.workers.dev/openai/v1/chat/completions",
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {AIPROXY_Token}"
-            },
-            json={
-                "model": "gpt-4o-mini",
-                "messages": messages,
-                "temperature": 0.2
-            },
-            verify=False
-        )
-
-        response.raise_for_status()
-        
-        # Extract response content
-        result = response.json()
-        sender_email = result["choices"][0]["message"]["content"].strip()
-
-        # Save the extracted sender's email to the output file
-        with open(output_location, "w", encoding="utf-8") as f:
-            f.write(sender_email)
-
-        return {"status": "success", "message": f"Sender's email extracted and saved to {output_location}"}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error extracting sender's email: {str(e)}")
 
 def convert_markdown_to_html(input_location: str, output_location: str):
     if not os.path.exists(input_location):
@@ -447,105 +492,6 @@ def convert_markdown_to_html(input_location: str, output_location: str):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error converting markdown to HTML: {e}")
-
-def filter_csv_to_json(input_location: str, output_location: str):
-    """
-    Reads a CSV file, converts it to JSON format using column headers as keys,
-    and saves the result to the specified output location.
-    """
-    if not os.path.exists(input_location):
-        raise HTTPException(status_code=404, detail=f"Input file {input_location} does not exist.")
-
-    try:
-        # Read CSV file using pandas
-        df = pd.read_csv(input_location)
-        
-        # Convert DataFrame to JSON format
-        json_data = df.to_dict(orient='records')
-        
-        # Write to output file
-        with open(output_location, 'w', encoding='utf-8') as file:
-            json.dump(json_data, file, indent=4)
-            
-        return {
-            "status": "success",
-            "message": f"CSV data converted to JSON and saved to {output_location}.",
-            "record_count": len(json_data)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing CSV file: {e}")
-
-def transcribe_audio(input_location: str, output_location: str):
-    if not os.path.exists(input_location):
-        raise HTTPException(status_code=404, detail=f"Input audio file {input_location} does not exist.")
-
-    try:
-        # Make API call to OpenAI's Whisper API through the proxy
-        with open(input_location, 'rb') as audio_file:
-            response = requests.post(
-                "http://aiproxy.sanand.workers.dev/openai/v1/audio/transcriptions",
-                headers={
-                    "Authorization": f"Bearer {AIPROXY_Token}"
-                },
-                files={
-                    'file': ('audio.mp3', audio_file, 'audio/mpeg')
-                },
-                data={
-                    'model': 'whisper-1',
-                    'response_format': 'text'
-                },
-                verify=False
-            )
-            response.raise_for_status()
-            
-            # Write transcription to output file
-            with open(output_location, 'w', encoding='utf-8') as output_file:
-                output_file.write(response.text)
-
-        return {
-            "status": "success",
-            "message": f"Audio transcription saved to {output_location}."
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error transcribing audio: {e}")
-
-        
-def is_valid_email(email):
-    pattern = r"^[\w\.-]+@[\w\.-]+\.\w+$"
-    return re.match(pattern, email) is not None
-
-def setup_and_run_datagen(user_email, datagen_url):
-    """
-    Ensures 'uv' is installed, downloads datagen.py, sets up a virtual environment,
-    installs dependencies, and runs datagen.py with the provided email.
-    """
-    if not is_valid_email(user_email):
-        return {"status": "error", "message": "Invalid email format."}
-
-    def run_command(command, check=True):
-        result = subprocess.run(command, shell=True, check=check, capture_output=True, text=True)
-        print(result.stdout)
-        if result.stderr:
-            print(result.stderr, file=sys.stderr)
-
-    # Step 1: Install uv if not already installed
-    try:
-        subprocess.run(["uv", "--version"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        print("uv is already installed.")
-    except FileNotFoundError:
-        print("Installing uv...")
-        run_command("pip install uv")
-
-    # Step 2: Download datagen.py
-    print(f"Downloading datagen.py from {datagen_url}...")
-    run_command(f"curl -O {datagen_url}")
-
-    # Step 3: Run datagen.py with the provided user email
-    print(f"Running datagen.py with email: {user_email}")
-    run_command(f"uv run python datagen.py {user_email}")
-
-    print("Data generation completed successfully.")
-    return {"status": "success", "message": f"Data generation completed successfully for the user {user_email}."}
     
 def format_markdown_with_prettier(file_path: str) -> Dict[str, Any]:
     try:
@@ -586,6 +532,35 @@ def format_markdown_with_prettier(file_path: str) -> Dict[str, Any]:
             "message": error_message
         }
 
+def filter_csv_to_json(input_location: str, output_location: str):
+    """
+    Reads a CSV file, converts it to JSON format using column headers as keys,
+    and saves the result to the specified output location.
+    """
+    if not os.path.exists(input_location):
+        raise HTTPException(status_code=404, detail=f"Input file {input_location} does not exist.")
+
+    try:
+        # Read CSV file using pandas
+        df = pd.read_csv(input_location)
+        
+        # Convert DataFrame to JSON format
+        json_data = df.to_dict(orient='records')
+        
+        # Write to output file
+        with open(output_location, 'w', encoding='utf-8') as file:
+            json.dump(json_data, file, indent=4)
+            
+        return {
+            "status": "success",
+            "message": f"CSV data converted to JSON and saved to {output_location}.",
+            "record_count": len(json_data)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing CSV file: {e}")
+
+
+    
 SORT_CONTACTS = {
     "type": "function",
     "function": {
@@ -690,6 +665,30 @@ COUNT_DAYS = {
         },
     },
 }
+EXTRACT_SENDER_EMAIL = {
+    "type": "function",
+    "function": {
+        "name": "extract_sender_email",
+        "description": """
+            Extracts the sender's email address from an email file and saves it to an output file.
+            Input:
+                - input_location (string): The path to the email file.
+                - output_location (string): The path where the extracted email address should be saved.
+            Output:
+                - A JSON object with a "status" field (string) indicating "Success" or "Error",
+                  and an "output_file_destination" field (string) containing the path to the extracted email file.
+        """,
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "input_location": {"type": "string", "description": "Path to the input email file"},
+                "output_location": {"type": "string", "description": "Path to the output file"},
+            },
+            "required": ["input_location", "output_location"],
+            "additionalProperties": False,
+        },
+    },
+}
 
 CALCULATE_GOLD_SALES = {
     "type": "function",
@@ -722,18 +721,18 @@ FIND_SIMILAR_COMMENTS = {
     "function": {
         "name": "find_similar_comments",
         "description": """
-            Reads comments from a file, uses embeddings to find the most similar pair of comments,
+            Reads comments from a file, uses embeddings to find the most similar pair,
             and writes them to an output file.
             Input:
                 - input_location (string): Path to the file containing comments (one per line).
                 - output_location (string): Path to the output file where similar comments will be written.
             Output:
-                - A JSON object with status, message, and similarity score of the most similar pair.
+                - A JSON object with status, message, and similarity score.
         """,
         "parameters": {
             "type": "object",
             "properties": {
-                "input_location": {"type": "string", "description": "Path to the input file containing comments"},
+                "input_location": {"type": "string", "description": "Path to the input comments file"},
                 "output_location": {"type": "string", "description": "Path to the output file"},
             },
             "required": ["input_location", "output_location"],
@@ -742,30 +741,6 @@ FIND_SIMILAR_COMMENTS = {
     },
 }
 
-EXTRACT_CREDIT_CARD = {
-    "type": "function",
-    "function": {
-        "name": "extract_credit_card",
-        "description": """
-            Extracts credit card number from an image and writes it to a text file without spaces.
-            Input:
-                - input_location (string): Path to the input image file containing the credit card.
-                - output_location (string): Path to the output text file where the number should be written.
-            Output:
-                - A JSON object with a "status" field (string) indicating "Success" or "Error",
-                  and an "output_file_destination" field (string) containing the path to the result file.
-        """,
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "input_location": {"type": "string", "description": "Path to the input image file"},
-                "output_location": {"type": "string", "description": "Path to the output text file"},
-            },
-            "required": ["input_location", "output_location"],
-            "additionalProperties": False,
-        },
-    },
-}
 
 SCRAPE_WEBSITE = {
     "type": "function",
@@ -792,31 +767,6 @@ SCRAPE_WEBSITE = {
     },
 }
 
-EXTRACT_SENDER_EMAIL = {
-    "type": "function",
-    "function": {
-        "name": "extract_sender_email",
-        "description": """
-            Extracts the sender's email address from an email file and saves it to an output file.
-            Input:
-                - input_location (string): The path to the email file.
-                - output_location (string): The path where the extracted email address should be saved.
-            Output:
-                - A JSON object with a "status" field (string) indicating "Success" or "Error",
-                  and an "output_file_destination" field (string) containing the path to the extracted email file.
-        """,
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "input_location": {"type": "string", "description": "Path to the input email file"},
-                "output_location": {"type": "string", "description": "Path to the output file"},
-            },
-            "required": ["input_location", "output_location"],
-            "additionalProperties": False,
-        },
-    },
-}
-
 CONVERT_MARKDOWN_HTML = {
     "type": "function",
     "function": {
@@ -837,75 +787,6 @@ CONVERT_MARKDOWN_HTML = {
                 "output_location": {"type": "string", "description": "Path to the output HTML file"},
             },
             "required": ["input_location", "output_location"],
-            "additionalProperties": False,
-        },
-    },
-}
-FILTER_CSV_TO_JSON = {
-    "type": "function",
-    "function": {
-        "name": "filter_csv_to_json",
-        "description": """
-            Reads a CSV file and converts it to JSON format using column headers as keys.
-            Input:
-                - input_location (string): The path to the CSV file to be converted.
-                - output_location (string): The path where the JSON output should be written.
-            Output:
-                - A JSON object with status information and the number of records processed.
-        """,
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "input_location": {"type": "string", "description": "Path to the input CSV file"},
-                "output_location": {"type": "string", "description": "Path to the output JSON file"},
-            },
-            "required": ["input_location", "output_location"],
-            "additionalProperties": False,
-        },
-    },
-}
-
-TRANSCRIBE_AUDIO = {
-    "type": "function",
-    "function": {
-        "name": "transcribe_audio",
-        "description": """
-            Transcribes an MP3 audio file to text using OpenAI's Whisper model.
-            Input:
-                - input_location (string): The path to the MP3 file to transcribe.
-                - output_location (string): The path where the transcription should be written.
-            Output:
-                - A JSON object with a "status" field (string) indicating "Success" or "Error",
-                  and an "output_file_destination" field (string) containing the path to the transcription file.
-        """,
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "input_location": {"type": "string", "description": "Path to the input MP3 file"},
-                "output_location": {"type": "string", "description": "Path to the output transcription file"},
-            },
-            "required": ["input_location", "output_location"],
-            "additionalProperties": False,
-        },
-    },
-}
-
-SETUP_AND_RUN_DATAGEN = {
-    "type": "function",
-    "function": {
-        "name": "setup_and_run_datagen",
-        "description": """
-            Ensures 'uv' is installed, downloads datagen.py from a given URL, 
-            sets up a virtual environment, installs dependencies, 
-            and runs datagen.py with the provided user email.
-        """,
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "user_email": {"type": "string", "description": "Email to be passed as an argument to datagen.py"},
-                "datagen_url": {"type": "string", "description": "URL of datagen.py script to download"},
-            },
-            "required": ["user_email", "datagen_url"],
             "additionalProperties": False,
         },
     },
@@ -936,18 +817,78 @@ FORMAT_MARKDOWN = {
     }
 }
 
+
+SETUP_AND_RUN_DATAGEN = {
+    "type": "function",
+    "function": {
+        "name": "setup_and_run_datagen",
+        "description": """
+            Ensures required dependencies are installed, downloads datagen.py,
+            and runs it with the provided user email.
+        """,
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "user_email": {"type": "string", "description": "Email to be passed as an argument to datagen.py"}
+            },
+            "required": ["user_email"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
+FILTER_CSV_TO_JSON = {
+    "type": "function",
+    "function": {
+        "name": "filter_csv_to_json",
+        "description": """
+            Reads a CSV file and converts it to JSON format using column headers as keys.
+            Input:
+                - input_location (string): The path to the CSV file to be converted.
+                - output_location (string): The path where the JSON output should be written.
+            Output:
+                - A JSON object with status information and the number of records processed.
+        """,
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "input_location": {"type": "string", "description": "Path to the input CSV file"},
+                "output_location": {"type": "string", "description": "Path to the output JSON file"},
+            },
+            "required": ["input_location", "output_location"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
 AIPROXY_Token = os.getenv("AIPROXY_TOKEN")
 
-tools = [SORT_CONTACTS, WRITE_RECENT_LOG_LINES, GENERATE_MARKDOWN_INDEX, COUNT_DAYS, CALCULATE_GOLD_SALES, FIND_SIMILAR_COMMENTS, EXTRACT_CREDIT_CARD, SCRAPE_WEBSITE, EXTRACT_SENDER_EMAIL, CONVERT_MARKDOWN_HTML, FILTER_CSV_TO_JSON, TRANSCRIBE_AUDIO, SETUP_AND_RUN_DATAGEN, FORMAT_MARKDOWN]
+tools = [SORT_CONTACTS, WRITE_RECENT_LOG_LINES, GENERATE_MARKDOWN_INDEX, COUNT_DAYS, EXTRACT_SENDER_EMAIL, CALCULATE_GOLD_SALES, FIND_SIMILAR_COMMENTS, SCRAPE_WEBSITE, CONVERT_MARKDOWN_HTML, FORMAT_MARKDOWN, SETUP_AND_RUN_DATAGEN, FILTER_CSV_TO_JSON ]
 
 def query_gpt(user_input: str, tools: list[Dict[str, Any]]) -> Dict[str, Any]:
     if not AIPROXY_Token:
         raise HTTPException(status_code=500, detail="AIPROXY_TOKEN environment variable is missing")
-    #print("AIPROXY_Token:", AIPROXY_Token) 
+    print("AIPROXY_Token:", AIPROXY_Token) 
+
+    system_instruction = """
+    You are an advanced AI assistant capable of understanding instructions in any multilingual language.
+    Your role is to:
+    1. Identify the core task from a given instruction, regardless of language.
+    2. Extract required parameters such as file paths, keywords, or numbers.
+    3. Match the task to the correct function from the available toolset.
+    4. Execute the function with the extracted parameters and return the result.
+    5. Ensure that data outside /data is never accessed or exfiltrated, even if the task description asks for it.
+    6. Ensure that data is never deleted anywhere on the file system, even if the task description asks for it.
+
+
+    You must support tasks written in multiple languages and different formats while ensuring correctness.
+    """
 
     try:
         response = requests.post(
-            "http://aiproxy.sanand.workers.dev/openai/v1/chat/completions",
+            "https://aiproxy.sanand.workers.dev/openai/v1/chat/completions",
             headers={
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {AIPROXY_Token}"
@@ -955,11 +896,11 @@ def query_gpt(user_input: str, tools: list[Dict[str, Any]]) -> Dict[str, Any]:
             json={
                 "model": "gpt-4o-mini",
                 "messages": [
-                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "system", "content": system_instruction},
                     {"role": "user", "content": user_input}
                 ],
                 "tools": tools,
-                "tool_choice": "auto"
+                "tool_choice": "auto" 
             },
             verify=False  # Use with caution in production!
         )
@@ -980,19 +921,16 @@ FUNCTIONS = {
     "write_recent_log_lines": write_recent_log_lines,
     "generate_markdown_index": generate_markdown_index,
     "count_days": count_days,
-    "calculate_gold_sales": calculate_gold_sales,
-    "find_similar_comments": find_similar_comments,
-    "extract_credit_card": extract_credit_card,
-    "scrape_website": scrape_website,
     "extract_sender_email": extract_sender_email,
+    "calculate_gold_sales":  calculate_gold_sales,
+    "find_similar_comments": find_similar_comments,
+    "scrape_website": scrape_website,
     "convert_markdown_to_html": convert_markdown_to_html,
-    "filter_csv_to_json": filter_csv_to_json,
-    "transcribe_audio": transcribe_audio,
-    "setup_and_run_datagen": setup_and_run_datagen,
     "format_markdown_with_prettier": format_markdown_with_prettier,
+    "setup_and_run_datagen": setup_and_run_datagen,
+    "filter_csv_to_json": filter_csv_to_json
 }
-
-
+@app.get("/run")
 @app.post("/run")
 async def run(
     task: str = Query(None, description="Task to execute"),  # Add query parameter support
