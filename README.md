@@ -133,16 +133,12 @@ The API provides detailed error messages for:
 5. Create a Pull Request
 
 ## License
-[Add your license information here]
+This project is licensed under the MIT License - see the [LICENSE](https://github.com/22akash/fastapi-with-tasks-by-llm/blob/main/LICENSE) file for details.
 
-## Support
-For support, please [create an issue](link-to-issues) in the repository.
-
-## Authors
-[Add author information here]
 
 ## Acknowledgments
 - OpenAI for GPT integration
 - FastAPI framework
 - Beautiful Soup for web scraping
 - Pandas for data processing
+- Numpy for embedding data related tasks
