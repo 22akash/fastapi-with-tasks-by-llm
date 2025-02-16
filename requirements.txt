@@ -10,3 +10,4 @@ python-jose
 python-dotenv
 sqlite3
 numpy
+urllib3
