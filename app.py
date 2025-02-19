@@ -1288,16 +1288,17 @@ async def run(
 
 @app.get("/read", response_class=PlainTextResponse)
 async def read_file(path: str = Query(..., description="Path to the file to read")):
-    try:
-        if not os.path.exists(path):
-            raise HTTPException(status_code=404, detail=f"File not found: {path}")
-
-        with open(path, 'r', encoding='utf-8') as file:
-            content = file.read()
-
-        return content
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
+    try:
+        if not os.path.exists(path):
+            raise HTTPException(status_code=404, detail=f"File not found: {path}")
+        
+        with open(path, 'r', encoding='utf-8') as file:
+            content = file.read()
+            
+        return content
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
 
 
 if __name__ == "__main__":
