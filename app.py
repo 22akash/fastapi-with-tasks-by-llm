@@ -17,8 +17,7 @@ import sys
 import re
 import base64
 import numpy as np
-import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 
 app = FastAPI()
 
@@ -654,6 +653,66 @@ def extract_credit_card(input_path: str, output_path: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
+def run_sql_query(input_location: str, output_location: str, query: str):
+    print(f"Running SQL query: {query}, {input_location}, {output_location}")
+    if not input_location or not query:
+        raise HTTPException(status_code=400, detail="Invalid input parameters: input_location and query are required.")
+    
+    # Determine database type (SQLite or DuckDB)
+    is_duckdb = input_location.endswith(".duckdb")
+    
+    if not output_location:
+        output_location = "./data/output.csv"
+    elif output_location.startswith("/"):
+        output_location = f".{output_location}"
+    
+    output_format = "csv" if output_location.endswith(".csv") else "json" if output_location.endswith(".json") else "txt"
+
+    try:
+        # Connect to the database
+        conn = duckdb.connect(input_location) if is_duckdb else sqlite3.connect(input_location)
+        
+        # Execute the query and fetch results into a DataFrame
+        df = pd.read_sql_query(query, conn)
+
+        # Save results
+        if output_format == "json":
+            df.to_json(output_location, orient="records", indent=4)
+        elif output_format == "txt":
+            df.to_csv(output_location, sep="\t", index=False)
+        else:  # Default is CSV
+            df.to_csv(output_location, index=False)
+
+        conn.close()
+        
+        return {"status": "success", "message": f"Query results saved to {output_location}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error executing query: {e}")
+
+def fetch_and_save_api(input_location: str, output_location: str):
+    """
+    Fetches data from an API URL and saves it to a file.
+    
+    Args:
+        input_location (str): The API URL to fetch data from
+        output_location (str): The path where the API response should be saved
+    """
+    try:
+        response = requests.get(input_location)
+        response.raise_for_status()  # Raises an HTTPError for bad responses
+        
+        with open(output_location, 'w', encoding='utf-8') as file:
+            file.write(response.text)
+            
+        return {
+            "status": "success",
+            "message": f"API data successfully fetched and saved to {output_location}"
+        }
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching API data: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error saving API data: {str(e)}")
+
 
 SORT_CONTACTS = {
     "type": "function",
@@ -1025,6 +1084,58 @@ EXTRACT_CREDIT_CARD = {
     },
 }
 
+RUN_SQL_QUERY = {
+    "type": "function",
+    "function": {
+        "name": "run_sql_query",
+        "description": """
+            Executes a SQL query on a SQLite or DuckDB database and saves the results to a file.
+            Input:
+                - input_location (string): Path to the SQLite (.db) or DuckDB (.duckdb) database file.
+                - output_location (string): Path where the query results should be saved.
+                - query (string): SQL query to execute.
+            Output:
+                - A JSON object with a "status" field (string) indicating "Success" or "Error",
+                  and a "message" field (string) containing the path to the results file.
+        """,
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "input_location": {"type": "string", "description": "Path to the database file"},
+                "output_location": {"type": "string", "description": "Path to save the query results"},
+                "query": {"type": "string", "description": "SQL query to execute"},
+            },
+            "required": ["input_location", "output_location", "query"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+FETCH_API_DATA = {
+    "type": "function",
+    "function": {
+        "name": "fetch_and_save_api",
+        "description": """
+            Fetches data from a specified API URL and saves the response to a file.
+            Input:
+                - input_location (string): The API URL to fetch data from
+                - output_location (string): The path where the API response should be saved
+            Output:
+                - A JSON object with a "status" field (string) indicating "Success" or "Error",
+                  and a "message" field (string) containing the result details.
+        """,
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "input_location": {"type": "string", "description": "API URL to fetch data from"},
+                "output_location": {"type": "string", "description": "Output file path"},
+            },
+            "required": ["input_location", "output_location"],
+            "additionalProperties": False,
+        },
+    },
+}
+
 
 AIPROXY_Token = os.getenv("AIPROXY_TOKEN")
 
@@ -1042,6 +1153,8 @@ tools = [
     SETUP_AND_RUN_DATAGEN,
     FILTER_CSV_TO_JSON,
     EXTRACT_CREDIT_CARD,
+    RUN_SQL_QUERY,
+    FETCH_API_DATA
 ]
 
 
@@ -1111,10 +1224,11 @@ FUNCTIONS = {
     "setup_and_run_datagen": setup_and_run_datagen,
     "filter_csv_to_json": filter_csv_to_json,
     "extract_credit_card": extract_credit_card,
+    "run_sql_query": run_sql_query,
+    "fetch_and_save_api": fetch_and_save_api
 }
 
 
-@app.get("/run")
 @app.post("/run")
 async def run(
     task: str = Query(None, description="Task to execute"),  # Add query parameter support
@@ -1179,7 +1293,7 @@ async def read_file(path: str = Query(..., description="Path to the file to read
         with open(path, 'r', encoding='utf-8') as file:
             content = file.read()
 
-        return content
+        return {"content": content}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
 
