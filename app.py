@@ -1,6 +1,7 @@
 import requests
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import json
@@ -17,6 +18,7 @@ import sys
 import re
 import base64
 import numpy as np
+import duckdb
 
 
 app = FastAPI()
@@ -1284,21 +1286,20 @@ async def run(
         raise HTTPException(status_code=500, detail="An unexpected error occurred.")
 
 
-@app.get("/read")
+@app.get("/read", response_class=PlainTextResponse)
 async def read_file(path: str = Query(..., description="Path to the file to read")):
-    try:
-        if not os.path.exists(path):
-            raise HTTPException(status_code=404, detail=f"File not found: {path}")
+    try:
+        if not os.path.exists(path):
+            raise HTTPException(status_code=404, detail=f"File not found: {path}")
 
-        with open(path, 'r', encoding='utf-8') as file:
-            content = file.read()
+        with open(path, 'r', encoding='utf-8') as file:
+            content = file.read()
 
-        return {"content": content}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
+        return content
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
 
 
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run(app, port=5000)
